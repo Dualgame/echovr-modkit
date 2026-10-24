@@ -1,0 +1,16 @@
+# echovr-modkit: nothing built, nothing from the game, no keys
+build/
+obj/
+__pycache__/
+*.pdb
+*.ilk
+*.obj
+*.exp
+*.lib
+*.exe
+*.dll
+*.so
+*.apk
+*.p12
+*.keystore
+*.jks
