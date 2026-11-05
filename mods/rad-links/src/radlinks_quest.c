@@ -59,6 +59,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include "invite_url.h"   /* the text p35 shows (pure; tests/test_invite_url.c) */
 
 #define TAG "radlinks"
 
@@ -180,6 +181,7 @@ static const Profile g_profile = {
 #define SYM_EXPIRESTEXT    0xd38c12d22d3552ebull
 #define ACTOR_LINK_VIEW    0xc3f9f167b2a06043ull
 #define SYM_LINKTEXT       0x3657cd7405999810ull
+#define SYM_NOTETEXT       0xf9a947a0638c030eull   /* info_text_02 of p35: the "can only be used on PC" note */
 /* p34 messages (as radlinks.c). The ENTER CODE field is actor 0xad97… (CCanvasUICR mnu_master
  * record 71), canvas ui_mnu_deeplinking_text_input 0x487df6d160c8da42: title_text (the bar above the field, shipped
  * "TITLE TEXT"; the join page's script sets it, its literal is "ENTER CODE") and inputfield (the R15TextEntryBehavior's
@@ -189,7 +191,18 @@ static const Profile g_profile = {
 #define P34_TITLE          "ENTER CODE"
 #define PASSWORD_WINDOW_MS 120000   /* how long a password prompt waits for its ENTER */
 
-static uint64_t SYM_CARD, SYM_BTN, SYM_TEXT, SYM_LINK_BTN, SYM_BACK, SYM_CANCEL;
+/* The "MY INVITE CODE" home row (ported from radlinks.c): extra actors added to mnu_master(_lowspec) p24 by the
+ * modkit's menu tree. Absent from stock trees, so the invite job never runs there. The field is a plain button whose
+ * label "*****" is the mask; its press sends evt_ffa_my_code_eye_clicked and we swap codetext between the mask and the
+ * code. The invite itself is created on first need: the first eye press or home INVITE LINK press. */
+#define ACTOR_MY_CODE      0x94d77fe1ca3e487full   /* ffa_my_invite_code (codetext) */
+#define UID_MY_LINK        0x3414b253e2c886e0ull   /* ffa_invite_link_uid: the home INVITE LINK element */
+#define HOME_OWNER         0x05ce113632359ce3ull   /* p24 owner */
+#define MY_CODE_EXPIRES_S  86400
+#define MY_CODE_MASK       "*****"
+#define EYE_DEBOUNCE_MS    250   /* one press may reach the hook once per target component */
+
+static uint64_t SYM_CARD, SYM_BTN, SYM_TEXT, SYM_LINK_BTN, SYM_BACK, SYM_CANCEL, SYM_EYE;
 
 typedef void (*TickFn)(void *game);
 typedef void (*SendCoreFn)(void *gs, const uint64_t *event, uint32_t flags);
@@ -258,6 +271,22 @@ static void rlog(const char *fmt, ...)
     }
     if (g_log_fd >= 0 && write(g_log_fd, buf, n) < 0) {}
     pthread_mutex_unlock(&g_log_lock);
+}
+
+/* Codes, links and lobby ids never reach the log whole: a log a player shares must not let its reader join the
+ * player's session. A reason word passes as is ("friend row"); anything else keeps its first quarter (at most 12
+ * characters) and its length: "8f4e1d2a..(36)", "D..(5)", "-lobbyid 8f4e1d2a..(36)". */
+typedef struct { char s[48]; } Masked;
+static Masked mask(const char *s)
+{
+    Masked m;
+    const char *pre = "";
+    if (!s) s = "";
+    if (!strncmp(s, "-lobbyid ", 9)) { pre = "-lobbyid "; s += 9; }
+    else if (strchr(s, ' ')) { snprintf(m.s, sizeof m.s, "%s", s); return m; }
+    size_t n = strlen(s), k = n / 4 > 12 ? 12 : n / 4;
+    snprintf(m.s, sizeof m.s, "%s%.*s..(%u)", pre, (int)k, s, (unsigned)n);
+    return m;
 }
 
 /* ---- fault-guarded reads (write() from the address into a private pipe) ---- */
@@ -334,10 +363,10 @@ static const char *mode_name(int m)
 static int card_index(uint64_t uid) { return uid == UID_CARD_L ? 1 : uid == UID_CARD_M ? 2 : uid == UID_CARD_R ? 3 : 0; }
 
 /* ---- worker jobs (hooks -> worker) and game actions (worker / hooks -> tick) ---- */
-enum { JOB_CREATE = 1, JOB_RESOLVE };
+enum { JOB_CREATE = 1, JOB_RESOLVE, JOB_MINE };
 typedef struct { int kind; char code[16]; Wizard wiz; char password[64], region[32]; int expires_s; } Job;
-enum { ACT_JOIN = 1, ACT_SHOW_CODE, ACT_P34_TEXT };
-typedef struct { int kind; char link[48], why[64], gametype[64]; int tries; uint64_t begin_at; } Action;   /* SHOW_CODE: link = the code; P34_TEXT: why = the text */
+enum { ACT_JOIN = 1, ACT_SHOW_CODE, ACT_P34_TEXT, ACT_MY_CODE, ACT_LINK_TEXT };   /* LINK_TEXT: why = the text */
+typedef struct { int kind; char link[48], why[INVITE_VIEW_CAP], gametype[64]; int tries; uint64_t begin_at; } Action;   /* SHOW_CODE: link = the code; P34_TEXT: why = the text */
 
 /* The password prompt: the code whose resolve answered 403 "needs a password" (worker writes, hooks read; g_wlock). */
 static struct { char code[16]; uint64_t until; } g_pw;
@@ -370,7 +399,7 @@ static void push_action(const Action *a)
     pthread_mutex_unlock(&g_alock);
 }
 
-/* ---- the player id (workaround), game thread ---- */
+/* ---- the player id, game thread ---- */
 static void refresh_user(uint8_t *game)
 {
     static const char *prefix[] = { "STM", "PSN", "XBX", "OVR-ORG", "OVR", "BOT", "DMO" };
@@ -422,8 +451,8 @@ static int show_page(uint8_t *game, uint64_t owner)
     return 0;
 }
 
-/* P2 texts of the last created invite (worker writes, tick reads; under g_wlock) */
-static struct { char code[16], expires[32], link[64]; } g_p2;
+/* texts of the last created invite (worker writes, tick reads; under g_wlock) */
+static struct { char code[16], expires[32], link[INVITE_VIEW_CAP]; } g_p2;   /* link = the text p35 shows */
 
 /* One canvas text: actor's canvasui element <- s. 1 = written. Game thread. */
 static int canvas_text(uintptr_t gs, uint64_t actor, uint64_t element, const char *s)
@@ -436,7 +465,7 @@ static int canvas_text(uintptr_t gs, uint64_t actor, uint64_t element, const cha
     return ((CanvasSetTextFn)(g_base + g_prof->va_canvas_set_text))(c.cs, c.idx, element, s) != 0;
 }
 
-/* P2: write the created invite into the wizard: p41's INVITE CODE (the canvas element, and the script's
+/* write the created invite into the wizard: p41's INVITE CODE (the canvas element, and the script's
  * curr_text_string so the eye toggle redraws it) and EXPIRES, and the p35 link. Game thread. SetString is ignored
  * until the script is live, and the page's own Enable may redraw after us, so the tick applies it three times, 1 s
  * apart. 0 = applied, 1 = retry. */
@@ -446,7 +475,7 @@ static int show_code(uint8_t *game, Action *a)
     t_fault = 0;
     uintptr_t gs = R64(U(game) + g_prof->o_game_menu_gs);
     if (t_fault || !gs) return 1;
-    char code[16], expires[32], link[64];
+    char code[16], expires[32], link[INVITE_VIEW_CAP];
     pthread_mutex_lock(&g_wlock);
     memcpy(code, g_p2.code, sizeof code);
     memcpy(expires, g_p2.expires, sizeof expires);
@@ -465,13 +494,102 @@ static int show_code(uint8_t *game, Action *a)
     }
     if (!done) return 1;
     int ex = canvas_text(gs, ACTOR_EXPIRES, SYM_EXPIRESTEXT, expires), lk = canvas_text(gs, ACTOR_LINK_VIEW, SYM_LINKTEXT, link);
+    if (invite_url_ok(link)) canvas_text(gs, ACTOR_LINK_VIEW, SYM_NOTETEXT, INVITE_NOTE_TEXT);   /* only beside our web link */
     a->gametype[0]++;   /* applications so far (gametype is unused by SHOW_CODE) */
-    rlog("code %s written to p41 (%d canvas(es), expires %s, link %s; pass %d)", code, done, ex ? "yes" : "no",
+    rlog("code %s written to p41 (%d canvas(es), expires %s, link %s; pass %d)", mask(code).s, done, ex ? "yes" : "no",
          lk ? "yes" : "no", a->gametype[0]);
     if (a->gametype[0] >= 3) return 0;
     a->begin_at = now_ms() + 1000;
     a->tries = 0;
     return 1;
+}
+
+/* My own LOBBY invite for the home row, created on first need (worker writes, tick reads; under g_wlock). Kept
+ * apart from g_p2 so a wizard create does not overwrite it. shown: 0 = the field shows MY_CODE_MASK (default, and
+ * again whenever the row reloads), 1 = the code. want: why the tick should create one (WANT_EYE / WANT_LINK); 0 =
+ * nobody asked yet, so no POST. Cleared when the invite arrives; a failure keeps it, so the backoff retries. */
+enum { WANT_EYE = 1, WANT_LINK = 2 };
+static struct { char code[16], link[64], view[INVITE_VIEW_CAP]; uint64_t until, retry_at, eye_at; int pending, shown, want; } g_mine;
+
+/* The home row field <- my code, or the mask while the eye is closed (canvas codetext, plus the script's
+ * curr_text_string when the field has one). Three passes, 1 s apart (an eye press: one). Game thread. 0 = applied. */
+static int show_mine(uint8_t *game, Action *a)
+{
+    if (a->begin_at && now_ms() < a->begin_at) return 1;
+    char code[16];
+    pthread_mutex_lock(&g_wlock);
+    memcpy(code, g_mine.code, sizeof code);
+    int shown = g_mine.shown;
+    pthread_mutex_unlock(&g_wlock);
+    if (!code[0]) return 0;
+    if (!shown) snprintf(code, sizeof code, "%s", MY_CODE_MASK);
+    t_fault = 0;
+    uintptr_t gs = R64(U(game) + g_prof->o_game_menu_gs);
+    int64_t k = !t_fault && gs ? find_actor(gs, ACTOR_MY_CODE) : -1;
+    if (k < 0) return 1;
+    PageHandle h = { NULL, 0, 0 };
+    ((FindScriptFn)(g_base + g_prof->va_find_script))(&h, (void *)gs, 0x0000ffffffff0000ull | (uint64_t)k, SYM_NCA_SCRIPT);
+    int ss = h.cs && ((ValidFn)(*(void ***)h.cs)[g_prof->vt_cs_valid / 8])(h.cs, h.idx);
+    if (ss) ((SetStringFn)(g_base + g_prof->va_set_string))(h.cs, h.idx, SYM_CURR_TEXT, code);
+    if (!canvas_text(gs, ACTOR_MY_CODE, SYM_CODETEXT, code)) return 1;
+    a->gametype[0]++;
+    rlog("my code written to the home row (%s, script %s; pass %d)", shown ? "shown" : "masked", ss ? "yes" : "no",
+         a->gametype[0]);   /* no code in the log: it is a live invite */
+    if (a->gametype[0] >= 3) return 0;
+    a->begin_at = now_ms() + 1000;
+    a->tries = 0;
+    return 1;
+}
+
+/* p35's link text <- a->why (my link after a home INVITE LINK press). Three passes, 1 s apart. Game thread. */
+static int link_text(uint8_t *game, Action *a)
+{
+    if (a->begin_at && now_ms() < a->begin_at) return 1;
+    t_fault = 0;
+    uintptr_t gs = R64(U(game) + g_prof->o_game_menu_gs);
+    if (t_fault || !gs || !canvas_text(gs, ACTOR_LINK_VIEW, SYM_LINKTEXT, a->why)) return 1;
+    if (invite_url_ok(a->why)) canvas_text(gs, ACTOR_LINK_VIEW, SYM_NOTETEXT, INVITE_NOTE_TEXT);   /* not beside the -lobbyid fallback */
+    if (!a->gametype[0]++) rlog("p35 link text set (%zu chars)", strlen(a->why));
+    if (a->gametype[0] >= 3) return 0;
+    a->begin_at = now_ms() + 1000;
+    a->tries = 0;
+    return 1;
+}
+
+/* At the main menu (netgame state 3) with the home row loaded: once a press wants my code and none is valid, ask the
+ * worker for it (no press, no POST); when the row comes back (the menu gamespace reloaded) write the cached code
+ * again, masked. Every 30 frames. Game thread. */
+static void mine_tick(uint8_t *game)
+{
+    static unsigned frames;
+    static int was_here;
+    if (++frames % 30) return;
+    t_fault = 0;
+    uintptr_t ng = R64(U(game) + g_prof->o_game_netgame);
+    int st = ng && !t_fault ? (int)R32(ng) : -1;
+    uintptr_t gs = st == 3 ? R64(U(game) + g_prof->o_game_menu_gs) : 0;
+    if (st != 3 /* NG_LOGGED_IN */ || t_fault || !gs || find_actor(gs, ACTOR_MY_CODE) < 0) { was_here = 0; return; }
+    uint64_t now = now_ms();
+    pthread_mutex_lock(&g_wlock);
+    int have = g_mine.code[0] && now < g_mine.until;
+    int want = g_mine.want;
+    int ask = !have && want && !g_mine.pending && now >= g_mine.retry_at;
+    if (ask) g_mine.pending = 1;
+    if (have && !was_here) g_mine.shown = 0;   /* the row reloaded: its button script drew the mask again */
+    pthread_mutex_unlock(&g_wlock);
+    if (ask) {
+        rlog("my code: creating the invite on demand (%s)", want & WANT_LINK ? "INVITE LINK press" : "eye press");
+        Job j;
+        memset(&j, 0, sizeof j);
+        j.kind = JOB_MINE;
+        push_job(&j);
+    } else if (have && !was_here) {
+        Action a;
+        memset(&a, 0, sizeof a);
+        a.kind = ACT_MY_CODE;
+        push_action(&a);
+    }
+    was_here = 1;
 }
 
 /* p34: a message in the code field's title bar. Applied three times, 1 s apart, as
@@ -516,6 +634,24 @@ static int parse_guid(const char *s, uint8_t g[16])
     return 1;
 }
 
+/* Exported for rad-menu's FRIENDS rows (Q3 "See this friend", PC radlinks.c's radlinks_follow):
+ *   radlinks_follow(guid, gametype): join a session or invite link by its GUID on this library's tick; gametype = a
+ *   name, "0x<16 hex>" (the symbol) or NULL/"" (none: -1, as a bare -lobbyid launch).
+ * 0 = queued, -1 = not a GUID, -2 = the tick hook is not live (the action could never run). No GUID in the log. */
+__attribute__((visibility("default"))) int radlinks_follow(const char *guid, const char *gametype)
+{
+    uint8_t g[16];
+    if (!g_base || strcmp(g_hooked, "metric,target,tick")) return -2;
+    if (!guid || !parse_guid(guid, g)) { rlog("follow: not a GUID"); return -1; }
+    Action a = { ACT_JOIN, "", "", "", 0, 0 };
+    snprintf(a.link, sizeof a.link, "%s", guid);
+    snprintf(a.why, sizeof a.why, "friend row");
+    if (gametype && *gametype) snprintf(a.gametype, sizeof a.gametype, "%s", gametype);
+    rlog("follow (gametype %s): queued", a.gametype[0] ? a.gametype : "-1");
+    push_action(&a);
+    return 0;
+}
+
 /* NetGame state [ng+0] (GameStateString 0x124d478): 3 logged in (the main menu), 4 loading global, 5 lobby, 6-8
  * loading, 9 in game. As radlinks.c:
  * - state 3: stage CR15Game's -lobbyid block (GUID +0x8538, gametype +0x8560) and run CR15Game::BeginMultiplayer()
@@ -531,11 +667,11 @@ static char g_wait_why[96];
 static int join_link(uint8_t *game, Action *a)
 {
     uint8_t guid[16];
-    if (!parse_guid(a->link, guid)) { rlog("join %s: not a GUID", a->link); return 0; }
+    if (!parse_guid(a->link, guid)) { rlog("join %s: not a GUID", mask(a->link).s); return 0; }
     t_fault = 0;
     uintptr_t ng = R64(U(game) + g_prof->o_game_netgame), lobby = ng ? R64(ng + g_prof->o_ng_lobby) : 0;
     int st = ng ? (int)R32(ng) : -1, ls = lobby ? (int)R32(lobby + g_prof->o_lobby_state) : -1;
-    if (t_fault) { rlog("join %s: fault reading the netgame", a->link); return 0; }
+    if (t_fault) { rlog("join %s: fault reading the netgame", mask(a->link).s); return 0; }
     char why[96];
     snprintf(why, sizeof why, "netgame %s, state %d, lobby %s, state %d", ng ? "set" : "null", st, lobby ? "set" : "null", ls);
     if (ng && st == NG_LOGGED_IN && !g_restore_gametype)
@@ -543,14 +679,16 @@ static int join_link(uint8_t *game, Action *a)
     else if (lobby && (st == NG_LOBBY || st == NG_IN_GAME) && ls != 2 && ls != 3 && ls != 7 && ls != 8)
         why[0] = 0;
     if (why[0]) {
-        if (strcmp(why, g_wait_why)) rlog("join %s: waiting (%s)", a->link, why);
+        if (strcmp(why, g_wait_why)) rlog("join %s: waiting (%s)", mask(a->link).s, why);
         snprintf(g_wait_why, sizeof g_wait_why, "%s", why);
         return 1;
     }
     g_wait_why[0] = 0;
-    uint64_t gt = a->gametype[0] ? csym64(a->gametype) : SYM_NONE;
+    uint64_t gt = !a->gametype[0] ? SYM_NONE
+                : (strlen(a->gametype) == 18 && !strncasecmp(a->gametype, "0x", 2)) ? strtoull(a->gametype, NULL, 16)
+                : csym64(a->gametype);   /* "0x<16 hex>" = the symbol itself (PC radlinks_follow) */
     if (st == NG_LOGGED_IN && !a->begin_at) {
-        rlog("join %s (%s): main menu: STATUS page %s", a->link, a->why,
+        rlog("join %s (%s): main menu: STATUS page %s", mask(a->link).s, mask(a->why).s,
              show_page(game, P51_STATUS) ? "not found (joining without it)" : "shown");
         a->begin_at = now_ms() + 1000;
         return 1;
@@ -563,20 +701,20 @@ static int join_link(uint8_t *game, Action *a)
         g_restore_by = now_ms() + 60000;
         memcpy(game + g_prof->o_game_lobbyid, guid, 16);
         *gtw = gt;
-        rlog("join %s (%s): main menu: -lobbyid staged (team word %04x, gametype %s), beginning multiplayer", a->link,
-             a->why, *(uint16_t *)(game + g_prof->o_game_team), a->gametype[0] ? a->gametype : "-1");
+        rlog("join %s (%s): main menu: -lobbyid staged (team word %04x, gametype %s), beginning multiplayer", mask(a->link).s,
+             mask(a->why).s, *(uint16_t *)(game + g_prof->o_game_team), a->gametype[0] ? a->gametype : "-1");
         ((GameFn)(g_base + g_prof->va_mp_transition))(game);
         ((GameFn)(g_base + g_prof->va_begin_mp))(game);
-        rlog("join %s: multiplayer begun, netgame state %u", a->link, R32(ng));
+        rlog("join %s: multiplayer begun, netgame state %u", mask(a->link).s, R32(ng));
         return 0;
     }
-    rlog("join %s (%s): netgame state %d, lobby state %d, gametype %s", a->link, a->why, st, ls,
+    rlog("join %s (%s): netgame state %d, lobby state %d, gametype %s", mask(a->link).s, mask(a->why).s, st, ls,
          a->gametype[0] ? a->gametype : "-1");
     ((GameFn)(g_base + g_prof->va_mp_transition))(game);
     if (st == NG_IN_GAME) ((LeaveFn)(g_base + g_prof->va_leave))((void *)ng, 0);
     else if (ls >= 4 && ls <= 6) ((CancelFn)(g_base + g_prof->va_cancel))((void *)lobby, 0x1b);   /* as DeepLinkCB */
     ((JoinFn)(g_base + g_prof->va_join))((void *)lobby, gt, guid, 0xffff);
-    rlog("join %s: requested", a->link);
+    rlog("join %s: requested", mask(a->link).s);
     return 0;
 }
 
@@ -595,10 +733,45 @@ static uint64_t actor_name(uint8_t *gs, uint64_t sactor)
 static void on_wizard_event(uint8_t *gs, const uint64_t *ev)
 {
     uint64_t sym = ev[0], comp = ev[3];
+    if (sym == SYM_EYE) {   /* the home row eye: mask <-> code; the first press creates the invite */
+        uint64_t now = now_ms();
+        pthread_mutex_lock(&g_wlock);
+        int dup = now - g_mine.eye_at < EYE_DEBOUNCE_MS, have = g_mine.code[0] && now < g_mine.until;
+        if (!dup) { g_mine.eye_at = now; g_mine.shown = !g_mine.shown; if (!have) g_mine.want |= WANT_EYE; }
+        int shown = g_mine.shown;
+        pthread_mutex_unlock(&g_wlock);
+        if (dup) return;
+        rlog("EYE pressed (uid %016llx): %s%s", ULL(comp), shown ? "show the code" : "mask the code",
+             have ? "" : " (no code yet: created on demand; the field keeps its placeholder until it arrives)");
+        if (have) {
+            Action a;
+            memset(&a, 0, sizeof a);
+            a.kind = ACT_MY_CODE;
+            a.gametype[0] = 2;   /* one pass */
+            push_action(&a);
+        }
+        return;
+    }
     if (sym != SYM_CARD && sym != SYM_BTN && sym != SYM_TEXT && sym != SYM_LINK_BTN && sym != SYM_BACK
         && sym != SYM_CANCEL)
         return;
     uint64_t owner = actor_name(gs, ev[2]);
+    if (sym == SYM_LINK_BTN && (comp == UID_MY_LINK || owner == HOME_OWNER)) {
+        /* the home module opens p35 natively; we only set which link it shows. No valid link yet: ask the
+         * tick to create the invite, and do_mine sets p35 when it arrives. */
+        Action a;
+        memset(&a, 0, sizeof a);
+        a.kind = ACT_LINK_TEXT;
+        uint64_t now = now_ms();
+        pthread_mutex_lock(&g_wlock);
+        if (g_mine.link[0] && now < g_mine.until) snprintf(a.why, sizeof a.why, "%s", g_mine.view);
+        else g_mine.want |= WANT_LINK;
+        pthread_mutex_unlock(&g_wlock);
+        rlog("INVITE LINK pressed on home (uid %016llx): %s", ULL(comp),
+             a.why[0] ? "my link" : "no link yet: created on demand, p35 keeps its text until it arrives");
+        if (a.why[0]) push_action(&a);
+        return;
+    }
     if (owner != P34_JOIN_CODE && owner != P35_LINK && owner != P36_EXPERIENCE && owner != P37_ARENA_MODE
         && owner != P38_COMBAT_MODE && owner != P39_MAP && owner != P40_SETTINGS && owner != P41_SHARE)
         return;
@@ -636,7 +809,7 @@ static void on_wizard_event(uint8_t *gs, const uint64_t *ev)
         snprintf(a.gametype, sizeof a.gametype, "%s", g_wiz.gametype);
         pthread_mutex_unlock(&g_wlock);
         if (!a.link[0]) { rlog("JOIN pressed: no invite created yet"); return; }
-        rlog("JOIN pressed: our invite %s", a.why);
+        rlog("JOIN pressed: our invite %s", mask(a.why).s);
         push_action(&a);
         return;
     }
@@ -720,14 +893,14 @@ static void on_metric(const char *js)
             size_t n = strlen(j.code);
             const char *pw = !strncasecmp(typed, j.code, n) && typed[n] ? typed + n : typed;
             snprintf(j.password, sizeof j.password, "%s", pw);
-            rlog("join via code: password for code=%s (%zu chars)", j.code, strlen(j.password));
+            rlog("join via code: password for code=%s (%zu chars)", mask(j.code).s, strlen(j.password));
         } else if (strlen(typed) >= sizeof j.code) {
             rlog("join via code: %zu characters, too long for a code", strlen(typed));
             p34_say("INVALID CODE");
             return;
         } else {
             snprintf(j.code, sizeof j.code, "%s", typed);
-            rlog("join via code: code=%s", j.code);
+            rlog("join via code: code=%s", mask(j.code).s);
         }
         push_job(&j);
     }
@@ -758,6 +931,7 @@ static void target_hook(void *gs, const uint64_t *ev, uint32_t flags)
 /* ---- services host: asked by the worker, answered on the game thread by the engine's getter ---- */
 static char g_svc_url[256];
 static char g_svc_src[96];
+static char g_link_base[160];   /* "invite_link_base" of the same config: overrides the base of p35's link (game thread writes, before g_svc_req = 2) */
 static int g_svc_req;   /* 0 idle, 1 asked (worker), 4 answering (tick), 2 answered, 3 worker gave up */
 
 /* Game thread: CJson::TString(&netgame->config, "apiservice_host", literal, 0) -- the rule the engine's API stubs use. */
@@ -769,6 +943,15 @@ static void services_answer(uint8_t *g)
     if (ng && !t_fault)
         s = ((JsonTStringFn)(U(g_base) + g_prof->va_json_tstring))((const void *)(ng + g_prof->o_ng_config),
                                                                    "apiservice_host", lit, 0);
+    static const char none[] = "";
+    t_fault = 0;
+    const char *lb = ng && !t_fault ? ((JsonTStringFn)(U(g_base) + g_prof->va_json_tstring))(
+                                          (const void *)(ng + g_prof->o_ng_config), "invite_link_base", none, 0) : NULL;
+    g_link_base[0] = 0;
+    if (lb && lb != none && *lb && strlen(lb) < sizeof g_link_base) {
+        if (invite_url_ok(lb)) snprintf(g_link_base, sizeof g_link_base, "%s", lb);
+        else rlog("invite_link_base in the config is not an http(s) address: ignored");
+    }
     int from_cfg = s && s != lit && *s;
     snprintf(g_svc_url, sizeof g_svc_url, "%s", from_cfg ? s : lit);
     snprintf(g_svc_src, sizeof g_svc_src, "%s", from_cfg ? "the config's apiservice_host"
@@ -784,6 +967,7 @@ static void tick_hook(void *game)
     uint8_t *g = (uint8_t *)game;
     uint64_t t = now_ms();
     if (t >= next_user) { next_user = t + 2000; refresh_user(g); }
+    mine_tick(g);
     /* answer when the worker asks, or unasked once the netgame first reaches logged-in (so the log names the host
      * at login, not at the first invite) */
     int sq = __atomic_load_n(&g_svc_req, __ATOMIC_ACQUIRE);
@@ -817,11 +1001,15 @@ static void tick_hook(void *game)
         for (int i = 0; i < n; i++) {
             int again = batch[i].kind == ACT_JOIN ? join_link(g, &batch[i]) :
                         batch[i].kind == ACT_SHOW_CODE ? show_code(g, &batch[i]) :
-                        batch[i].kind == ACT_P34_TEXT ? p34_text(g, &batch[i]) : 0;
+                        batch[i].kind == ACT_P34_TEXT ? p34_text(g, &batch[i]) :
+                        batch[i].kind == ACT_MY_CODE ? show_mine(g, &batch[i]) :
+                        batch[i].kind == ACT_LINK_TEXT ? link_text(g, &batch[i]) : 0;
             if (again && ++batch[i].tries < 900) push_action(&batch[i]);   /* about 10 s of frames */
-            else if (again && batch[i].kind == ACT_SHOW_CODE) rlog("code %s: p41's script never took it", batch[i].link);
+            else if (again && batch[i].kind == ACT_SHOW_CODE) rlog("code %s: p41's script never took it", mask(batch[i].link).s);
+            else if (again && batch[i].kind == ACT_MY_CODE) rlog("my code: the home row's canvas never took it");
+            else if (again && batch[i].kind == ACT_LINK_TEXT) rlog("p35 link: the canvas never took it");
             else if (again && batch[i].kind == ACT_P34_TEXT) rlog("p34 title \"%s\": the field's canvas never took it", batch[i].why);
-            else if (again) rlog("join %s: the game never became ready, dropped", batch[i].link);
+            else if (again) rlog("join %s: the game never became ready, dropped", mask(batch[i].link).s);
         }
     }
     g_tick_orig(game);
@@ -892,6 +1080,30 @@ static int services_ready(void)
     return 1;
 }
 
+/* The text for p35: the client override, else the reply's link_url, else apiservice_host's address + the stock path.
+ * When none applies the old text, "-lobbyid <join id>", so p35 never shows nothing. Worker thread, after services_ready. */
+static void link_view(const char *resp, const char *code, const char *join_id, char *view)
+{
+    char host_url[INVITE_VIEW_CAP] = "", svc[160] = "";
+    json_str(resp, "link_url", host_url, sizeof host_url);
+    if (g_svc_state > 0) {
+        int v6 = strchr(g_svc_host, ':') != NULL;
+        int n = snprintf(svc, sizeof svc, "http://%s%s%s", v6 ? "[" : "", g_svc_host, v6 ? "]" : "");
+        if (n > 0 && n < (int)sizeof svc && strcmp(g_svc_port, "80")) snprintf(svc + n, sizeof svc - n, ":%s", g_svc_port);
+    }
+    int src;
+    if (invite_view_url(view, INVITE_VIEW_CAP, host_url, g_link_base, svc, code, &src)) {
+        char base[INVITE_VIEW_CAP];
+        snprintf(base, sizeof base, "%s", view);
+        char *q = strstr(base, "/deeplinks/launch");
+        if (q) *q = 0;
+        rlog("p35 link: %s (base %s)", invite_src_name(src), base);
+    } else {
+        snprintf(view, INVITE_VIEW_CAP, "-lobbyid %s", join_id);
+        rlog("p35 link: no usable link_url, invite_link_base or services address; showing the join id");
+    }
+}
+
 /* One request (HTTP/1.0, Connection: close, 5 s timeouts); returns the HTTP status (0 = transport error), body in out.
  * The host is resolved per request (getaddrinfo: an IPv4/IPv6 literal or a name). */
 static int http(const char *method, const char *path, const char *body, char *out, size_t cap)
@@ -947,6 +1159,63 @@ static int http(const char *method, const char *path, const char *body, char *ou
     return status;
 }
 
+/* POST my LOBBY invite for the home row (only once a press wants it). On 429 / 503 / no answer the field keeps its
+ * placeholder and the tick asks again in 60 s; other refusals wait 10 min. Worker thread. */
+static void do_mine(void)
+{
+    char user[64], body[256], resp[2048], code[16], link[48], err[256];
+    pthread_mutex_lock(&g_wlock);
+    snprintf(user, sizeof user, "%s", g_wiz.user);
+    pthread_mutex_unlock(&g_wlock);
+    uint64_t now = now_ms();
+    if (!user[0] || strchr(user, '"') || strchr(user, '\\')) {
+        static int said;
+        if (!said++) rlog("my code: no player id yet (XPlatformId); retrying");
+        pthread_mutex_lock(&g_wlock);
+        g_mine.pending = 0;
+        g_mine.retry_at = now + 5000;
+        pthread_mutex_unlock(&g_wlock);
+        return;
+    }
+    snprintf(body, sizeof body,
+             "{\"user_id\":\"%s\",\"gametype\":\"social_2.0_private\",\"level\":\"mpl_lobby_b2\",\"expires_s\":%d}",
+             user, MY_CODE_EXPIRES_S);
+    int st = http("POST", "/invites", body, resp, sizeof resp);
+    if (st != 200 || !json_str(resp, "code", code, sizeof code) || !json_str(resp, "link", link, sizeof link)) {
+        if (!json_str(resp, "error", err, sizeof err)) snprintf(err, sizeof err, "%.200s", resp);
+        int soon = st == 0 || st == 429 || st == 503;
+        rlog("my code: HTTP %d %s; the field keeps its placeholder, retry in %s", st, err, soon ? "60 s" : "10 min");
+        pthread_mutex_lock(&g_wlock);
+        g_mine.pending = 0;
+        g_mine.retry_at = now + (soon ? 60000 : 600000);
+        pthread_mutex_unlock(&g_wlock);
+        return;
+    }
+    char view[INVITE_VIEW_CAP];
+    link_view(resp, code, link, view);
+    pthread_mutex_lock(&g_wlock);
+    snprintf(g_mine.code, sizeof g_mine.code, "%s", code);
+    snprintf(g_mine.link, sizeof g_mine.link, "%s", link);
+    snprintf(g_mine.view, sizeof g_mine.view, "%s", view);
+    g_mine.until = now + (MY_CODE_EXPIRES_S - 300) * 1000ull;   /* valid until 5 min before the host expires it */
+    g_mine.pending = 0;
+    int want = g_mine.want;
+    g_mine.want = 0;   /* the next one is made on the next press after this one expires */
+    pthread_mutex_unlock(&g_wlock);
+    rlog("my code issued (%zu chars), link %zu chars: invite created on demand (%s)", strlen(code), strlen(link),
+         want & WANT_LINK ? "INVITE LINK press" : "eye press");
+    Action a;
+    memset(&a, 0, sizeof a);
+    a.kind = ACT_MY_CODE;
+    push_action(&a);
+    if (want & WANT_LINK) {   /* the press that asked opened p35: show the link there */
+        memset(&a, 0, sizeof a);
+        a.kind = ACT_LINK_TEXT;
+        snprintf(a.why, sizeof a.why, "%s", view);
+        push_action(&a);
+    }
+}
+
 static void do_create(const Job *j)
 {
     const Route *rt = route_of(&j->wiz);
@@ -972,6 +1241,8 @@ static void do_create(const Job *j)
         rlog("create %s/%s: HTTP %d %s", rt->gametype, rt->level ? rt->level : "-", st, err);
         return;
     }
+    char view[INVITE_VIEW_CAP];
+    link_view(resp, code, link, view);
     pthread_mutex_lock(&g_wlock);
     snprintf(g_wiz.code, sizeof g_wiz.code, "%s", code);
     snprintf(g_wiz.link, sizeof g_wiz.link, "%s", link);
@@ -979,28 +1250,38 @@ static void do_create(const Job *j)
     pthread_mutex_unlock(&g_wlock);
     char srv_region[32] = "";
     json_str(resp, "region", srv_region, sizeof srv_region);
-    rlog("created code=%s link=%s gametype=%s level=%s region=%s", code, link, rt->gametype, rt->level ? rt->level : "-",
+    rlog("created code=%s link=%s gametype=%s level=%s region=%s", mask(code).s, mask(link).s, rt->gametype, rt->level ? rt->level : "-",
          srv_region[0] ? srv_region : "-");
     json_str(resp, "expires_at", exp_at, sizeof exp_at);   /* "2026-10-21T05:38:59.63Z" -> "EXPIRES: 05:38 UTC" */
     pthread_mutex_lock(&g_wlock);
     snprintf(g_p2.code, sizeof g_p2.code, "%s", code);
     if (strlen(exp_at) >= 16 && exp_at[10] == 'T') snprintf(g_p2.expires, sizeof g_p2.expires, "EXPIRES: %.5s UTC", exp_at + 11);
     else snprintf(g_p2.expires, sizeof g_p2.expires, "EXPIRES: -");
-    snprintf(g_p2.link, sizeof g_p2.link, "-lobbyid %s", link);   /* the boot argument that joins it, 45 chars */
+    snprintf(g_p2.link, sizeof g_p2.link, "%s", view);   /* what p35 shows; the join id stays in g_wiz.link */
     pthread_mutex_unlock(&g_wlock);
     Action a = { ACT_SHOW_CODE, "", "create", "", 0, 0 };
     snprintf(a.link, sizeof a.link, "%s", code);
     push_action(&a);
 }
 
-/* The p34 message for a failed resolve (host Invites.cs: 404 unknown, 410 expired / revoked / server gone, 403 needs
- * or wrong password, 503 no free game server: the code stays valid, retry); 0 = no answer. */
-static const char *resolve_message(int st, const char *err)
+/* The p34 message for a failed resolve. The host's "reason" field first (invalid, expired, closed, password_required,
+ * wrong_password, forbidden, invites_off, no_server, rate_limited, bad_request, error), then the status and English
+ * message of a host without it (404 unknown, 410 expired / revoked / server gone, 403 needs or wrong password, 503 no
+ * free game server: the code stays valid, retry; 429 too many requests); 0 = no answer. */
+static const char *resolve_message(int st, const char *err, const char *reason)
 {
+    static const char *const map[][2] = {
+        { "invalid", "INVALID CODE" }, { "bad_request", "INVALID CODE" }, { "expired", "CODE EXPIRED" },
+        { "closed", "CODE CLOSED" }, { "password_required", "ENTER PASSWORD" }, { "wrong_password", "WRONG PASSWORD" },
+        { "invites_off", "INVITES OFF" }, { "no_server", "NO SERVER FREE" }, { "rate_limited", "TRY AGAIN LATER" },
+    };
+    for (size_t i = 0; reason[0] && i < sizeof map / sizeof map[0]; i++)
+        if (!strcmp(reason, map[i][0])) return map[i][1];
     if (st == 404) return "INVALID CODE";
-    if (st == 503) return "NO SERVER FREE";
+    if (st == 503) return strstr(err, "invites are off") ? "INVITES OFF" : "NO SERVER FREE";
+    if (st == 429) return "TRY AGAIN LATER";
     if (st == 410) return strstr(err, "expired") ? "CODE EXPIRED" : "CODE CLOSED";
-    if (st == 403) return strstr(err, "needs a password") ? "ENTER PASSWORD" : "WRONG PASSWORD";
+    if (st == 403 && strcmp(reason, "forbidden")) return strstr(err, "needs a password") ? "ENTER PASSWORD" : "WRONG PASSWORD";
     if (st == 0) return "NO CONNECTION";
     return "SERVER ERROR";
 }
@@ -1018,11 +1299,15 @@ static void do_resolve(const Job *j)
     }
     int st = http("GET", path, NULL, resp, sizeof resp);
     if (st != 200 || !json_str(resp, "link", link, sizeof link)) {
+        char reason[32] = "";
         if (!json_str(resp, "error", err, sizeof err)) snprintf(err, sizeof err, "%s", resp);
-        rlog("resolve %s%s: HTTP %d %s", j->code, j->password[0] ? " (with password)" : "", st, err);
-        const char *msg = resolve_message(st == 200 ? 500 : st, err);
+        json_str(resp, "reason", reason, sizeof reason);
+        /* the host's message names the code: log it only when it does not */
+        rlog("resolve %s%s: HTTP %d reason=%s %s", mask(j->code).s, j->password[0] ? " (with password)" : "", st,
+             reason[0] ? reason : "-", j->code[0] && strstr(err, j->code) ? "(message names the code)" : err);
+        const char *msg = resolve_message(st == 200 ? 500 : st, err, reason);
         pthread_mutex_lock(&g_wlock);
-        if (st == 403) {   /* needs / wrong password: (re)open the prompt for this code */
+        if (st == 403 && strcmp(reason, "forbidden")) {   /* needs / wrong password: (re)open the prompt for this code */
             snprintf(g_pw.code, sizeof g_pw.code, "%s", j->code);
             g_pw.until = now_ms() + PASSWORD_WINDOW_MS;
         } else {
@@ -1038,7 +1323,7 @@ static void do_resolve(const Job *j)
     if (g_p34_dirty) p34_say(P34_TITLE);   /* leave the field as the page set it, for the next visit */
     Action a = { ACT_JOIN, "", "", "", 0, 0 };
     json_str(resp, "gametype", a.gametype, sizeof a.gametype);
-    rlog("resolved code=%s link=%s gametype=%s", j->code, link, a.gametype);
+    rlog("resolved code=%s link=%s gametype=%s", mask(j->code).s, mask(link).s, a.gametype);
     snprintf(a.link, sizeof a.link, "%s", link);
     snprintf(a.why, sizeof a.why, "%s", j->code);
     push_action(&a);
@@ -1066,6 +1351,7 @@ static void *worker_thread(void *unused)
         pthread_mutex_unlock(&g_jlock);
         if (j.kind == JOB_CREATE) do_create(&j);
         else if (j.kind == JOB_RESOLVE) do_resolve(&j);
+        else if (j.kind == JOB_MINE) do_mine();
     }
     return NULL;
 }
@@ -1251,6 +1537,7 @@ static void *attach_thread(void *unused)
     SYM_LINK_BTN = csym64("evt_link_button_clicked");
     SYM_BACK = csym64("evt_back_btn_clicked");
     SYM_CANCEL = csym64("evt_submission_canceled");
+    SYM_EYE = csym64("evt_ffa_my_code_eye_clicked");
     /* all three are needed (target feeds the wizard, tick runs its actions, metric reads settings and the code): the
      * first refused word leaves rad-links inert; a word already swapped stays, and its hook only chains */
     if (!swap_word(gmetric, want_metric, U(metric_hook), (void **)&g_metric_orig, "metric GOT (NR15Logger::MetricLog)")) {

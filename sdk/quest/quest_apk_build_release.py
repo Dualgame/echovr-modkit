@@ -14,17 +14,23 @@ file to equal stock.
     4 store-api-path  0x126c21c cbz -> b: the store API always takes    quest_libr15_api_config_patch.STORE_API_PATH_PATCHES
                       the (now config-driven) literal path, never https://api-%s.readyatdawn.com
     5 early-quit      client half of the early-quit lockout             quest_libr15_earlyquit_patch.SITES
-    6 loader          "libevrmod.so" appended to DT_NEEDED             s_loader: the spare
+    6 loader          "libevrmod.so" appended to DT_NEEDED             uses the spare
                       .dynamic slot 34 (NULL) -> NEEDED, DT_STRSZ widened to reach the name, the name in the
                       shared cave above the api-config stubs (0x2a760f0, 13 B); the .dynstr section header's sh_size widened
                       to match (bionic's ElfReader bounds DT_NEEDED names by it)
   libpnsovr.so
     7 pnsovr-login    login prerequisite bypass                         quest_libpnsovr_login_patch.patch_libpnsovr
+  libcab86dd5921bafc7.so (the CREATE GAME page script)
+   10 combat-card-unlock  csel -> mov x0,x10 at 0x12fcc: the ECHO COMBAT card is no longer drawn locked
+                      (quest_libcab86_combat_unlock_patch.patch). Default ON; --no-combat-unlock skips it. A combat
+                      match still does not start: the Quest build ships no combat level.
   APK
     8 plugins         lib/arm64-v8a/libevrmod.so (the loader, --loader-so) and each --plugin <so> (repeatable;
-                      default: rad-links' libradlinks.so) as lib/arm64-v8a/libevrmod_<stem>.so (libradlinks.so
-                      -> libevrmod_radlinks.so). The loader dlopens libevrmod_*.so in strcmp order. With
-                      --skip-loader the plugins keep their own names and ship inert.
+                      default: rad-links' libradlinks.so, plus rad-menu's libradmenu.so when it is built) as
+                      lib/arm64-v8a/libevrmod_<stem>.so (libradlinks.so -> libevrmod_radlinks.so). The loader dlopens libevrmod_*.so in strcmp order. With
+                      --skip-loader the plugins keep their own names and ship inert. A `libradlinks.so.sha256`
+                      file beside a default pins it: that default is refused unless its sha256 matches (a newer
+                      build in that directory is never picked up silently; name it with --plugin to use it).
     9 repack + sign   v1/JAR signature with --keystore (PKCS12); if it does not exist, keytool generates it there
                       on this machine. No keystore is committed or shipped.
 
@@ -52,6 +58,7 @@ import quest_libr15_api_config_patch as api                       # noqa: E402
 import quest_libr15_earlyquit_patch as eq                         # noqa: E402
 import quest_apk_v1sign as v1                                     # noqa: E402
 import quest_libpnsovr_login_patch as pns                         # noqa: E402
+import quest_libcab86_combat_unlock_patch as combat               # noqa: E402
 
 BUILD = '6528386917200980'                                         # vc 4987566, 2023-04-24
 # The store APK as Meta serves it (the same bytes for every owner).
@@ -74,6 +81,7 @@ def _find_built(*patterns):
 
 
 DEFAULT_PLUGIN = _find_built('*/rad-links/build/libradlinks.so')           # the rad-links Quest build output
+DEFAULT_MENU_PLUGIN = _find_built('*/rad-menu/build/libradmenu.so')        # the rad-menu Quest build output (optional)
 DEFAULT_LOADER = _find_built('loader/build/libevrmod.so', '*/*/quest/build/libevrmod.so')   # the loader build output
 LOADER_NAME, PLUGIN_PREFIX = 'libevrmod.so', 'libevrmod_'
 # step 6 layout (file offsets of the stock libr15.so; LOAD0 has vaddr == offset, .dynamic is in LOAD1 at +0x1000)
@@ -99,6 +107,7 @@ PINS = {
     'loader':         ('2f1e9b961682c4ddd4ebe02bbd594e6fdfc00c785df279670a38bdea8666c92e',
                        '5a6155e3948d4a19a7d0515e260de01fddce9a4eeed534c4a78fb17d9673958f'),
 }
+PINS['combat-card-unlock'] = (combat.LIB_STOCK_SHA, combat.LIB_PATCHED_SHA)    # libcab86dd5921bafc7.so
 PNSOVR_OUT_SHA = 'f69e379d378a443fd2e42988313e36ad9327512a678e7668579fdf6f015c897c'
 
 
@@ -210,6 +219,40 @@ def patch_pnsovr(data, record):
     return out
 
 
+def patch_combat(data, record):
+    """Step 10: the ECHO COMBAT card unlock in the page-script library (one 4-byte site, see the patch module)."""
+    pin = PINS['combat-card-unlock']
+    if sha(data) != pin[0]:
+        sys.exit(f'refusing: {combat.LIB_ENTRY} is not stock {BUILD} (sha256 {sha(data)}, pinned {pin[0]})')
+    try:
+        if combat.state(data) != 'stock':
+            sys.exit(f'refusing: step 10 combat-card-unlock: {combat.LIB_ENTRY} is already patched')
+        out = combat.patch(data)
+    except combat.PatchError as e:
+        sys.exit(f'refusing: step 10 combat-card-unlock: {e}')
+    if sha(out) != pin[1]:
+        sys.exit(f'refusing: step 10 combat-card-unlock: output sha256 {sha(out)}, pinned {pin[1]}')
+    record.append((10, 'combat-card-unlock', 'pinned', sha(data), sha(out), len(combat.PATCH)))
+    return out
+
+
+def check_default_plugin(path):
+    """The default plugin is whatever the rad-links build last wrote. If `<so>.sha256` (sha256sum format) sits beside
+    it, the default must match that pin; a different build is refused (pass --plugin to choose it on purpose)."""
+    if not os.path.exists(path):
+        sys.exit(f'refusing: default plugin {path} does not exist (build rad-links, or pass --plugin / --no-plugins)')
+    d = sha(open(path, 'rb').read())
+    pin = path + '.sha256'
+    if os.path.exists(pin):
+        want = (open(pin).read().split() or [''])[0].lower()
+        if d != want:
+            sys.exit(f'refusing: default plugin {path} sha256 {d} does not match its pin {want} ({pin}); '
+                     f'pass --plugin {path} to ship this build on purpose')
+        print(f'default plugin {path}  sha256 {d}  (matches its pin)')
+    else:
+        print(f'warning: default plugin {path}  sha256 {d}  has no pin ({pin}); pass --plugin to choose it explicitly')
+
+
 def check_plugin(path):
     data = open(path, 'rb').read()
     if data[:4] != b'\x7fELF' or data[4] != 2 or int.from_bytes(data[16:18], 'little') != 3 \
@@ -237,12 +280,14 @@ def main():
     ap.add_argument('--keystore', help='PKCS12 signing key; generated with keytool if the file does not exist')
     ap.add_argument('--storepass', default='android', help='keystore password (default: android)')
     ap.add_argument('--plugin', action='append', default=None, metavar='SO',
-                    help='plugin .so to add under lib/arm64-v8a/ (repeatable; default: rad-links)')
+                    help='plugin .so to add under lib/arm64-v8a/ (repeatable; default: rad-links, and rad-menu if built)')
     ap.add_argument('--no-plugins', action='store_true', help='add no plugin library')
     ap.add_argument('--embed-config', metavar='JSON',
                     help='optional APK fallback config (assets/_local/config.json); /sdcard still wins')
     ap.add_argument('--skip-loader', action='store_true',
                     help='skip step 6: no libevrmod.so; plugins keep their names and ship inert (dev only)')
+    ap.add_argument('--no-combat-unlock', action='store_true',
+                    help='skip step 10: leave the ECHO COMBAT card locked on the CREATE GAME page (default: unlock it)')
     ap.add_argument('--loader-so', default=DEFAULT_LOADER, metavar='SO',
                     help='the loader library (default: the build output of the loader, if found)')
     ap.add_argument('--dry-run', action='store_true', help='patch in memory and print the step table; write nothing')
@@ -259,7 +304,16 @@ def main():
         sys.exit(f'refusing: not the stock store APK of Quest {BUILD} vc 4987566 (sha256 {STOCK_APK_SHA})')
     if a.out:
         sd.refuse_out(a.out, src)
-    plugins = [] if a.no_plugins else [os.path.abspath(p) for p in (a.plugin or [DEFAULT_PLUGIN])]
+    defaults = [DEFAULT_PLUGIN]
+    if not a.no_plugins and not a.plugin:
+        check_default_plugin(DEFAULT_PLUGIN)
+        if os.path.exists(DEFAULT_MENU_PLUGIN):
+            check_default_plugin(DEFAULT_MENU_PLUGIN)
+            defaults.append(DEFAULT_MENU_PLUGIN)
+        else:
+            print(f'note: rad-menu is not built ({DEFAULT_MENU_PLUGIN}); the APK gets rad-links only '
+                  '(build mods/rad-menu/build_quest.sh, or pass --plugin)')
+    plugins = [] if a.no_plugins else [os.path.abspath(p) for p in (a.plugin or defaults)]
     adds = {}
     if not a.skip_loader:
         adds[LIB_DIR + LOADER_NAME] = check_plugin(a.loader_so)
@@ -283,13 +337,19 @@ def main():
         ovr = patch_pnsovr(zin.read(OVR_ENTRY), record)
         for e, d in adds.items():
             record.append((8, 'plugin', e, '-', sha(d), len(d)))
-        print(f'\n{"#":>2} {"step":<15} {"state":<14} {"in sha256":<16} {"out sha256":<64} bytes')
+        repl = {SO_ENTRY: so, OVR_ENTRY: ovr}
+        if a.no_combat_unlock:
+            record.append((10, 'combat-card-unlock', 'SKIPPED', '-', '-', 0))
+        else:
+            if combat.LIB_ENTRY not in names:
+                sys.exit(f'refusing: {combat.LIB_ENTRY} is not in the APK')
+            repl[combat.LIB_ENTRY] = patch_combat(zin.read(combat.LIB_ENTRY), record)
+        print(f'\n{"#":>2} {"step":<18} {"state":<14} {"in sha256":<16} {"out sha256":<64} bytes')
         for i, n, st, hi, ho, nb in record:
-            print(f'{i:>2} {n:<15} {st:<14} {hi[:16]:<16} {ho:<64} {nb}')
+            print(f'{i:>2} {n:<18} {st:<14} {hi[:16]:<16} {ho:<64} {nb}')
         print(f'libr15.so: {len(applied)} sites, {sum(len(p) for *_, p in applied)} bytes; outside them = stock')
         if a.dry_run:
             return 0
-        repl = {SO_ENTRY: so, OVR_ENTRY: ovr}
         keep = [i for i in zin.infolist() if not v1.is_signature_entry(i.filename)]
         entries = []                                   # pass 1: manifest digests, one entry in memory at a time
         for info in keep:

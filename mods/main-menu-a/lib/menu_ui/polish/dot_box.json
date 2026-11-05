@@ -1,0 +1,1 @@
+[{"op": "name", "prim": 2, "name": "dot_box"}, {"op": "rect", "prim": 2, "rect": [30, 30, 70, 70]}, {"op": "tint", "prim": 2, "rgba": [0.85, 0.87, 0.9, 1]}]

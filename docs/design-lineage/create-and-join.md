@@ -58,6 +58,11 @@ and the Quest library share no code. Each refuses to load on any other build and
 | region: a create lands on a server in the asked region, and the joiner's server-location readout shows it | yes | yes (as joiner) |
 | Quest cards that open the wizard | n/a | yes (see Main Menu Cards) |
 
+Built in 0.2.0: the INVITE LINK page (the shipped `view_link` canvas) shows `<link_base>/deeplinks/launch?code=CODE`
+instead of the placeholder, with the base set by the host (`--link-base`, default its LAN address) or by `invite_link_base`
+in the client's `config.json`; opening that link in a browser shows the host's landing page. The page shows the invite's
+state (live, expired or closed) and does not start the game; the game still joins through JOIN VIA CODE. Checked on PC and Quest by event ([../status.md](../status.md)).
+
 Not built: a protocol handler or installer that opens a link from outside the game, and the in-match wizard (its page
 owners differ from the main-menu wizard's, so a create there is not seen). Hostnames are not resolved by the plugin:
 it takes an IPv4 literal for the services host. How the pieces connect: [../architecture.md](../architecture.md).
@@ -65,8 +70,8 @@ it takes an IPv4 literal for the services host. How the pieces connect: [../arch
 ## What is open
 - Quick / Advanced Invite and the party join policy (design-only; nothing shipped to reuse).
 - An in-lobby wizard (CONTINUING: P4 in-lobby wizard).
-- Clearing the field automatically at the password prompt, a non-default region chosen in the wizard, a shareable
-  link text, hostnames in the plugin.
+- Clearing the field automatically at the password prompt, a non-default region chosen in the wizard, hostnames in
+  the plugin.
 - Persistence, immediate revoke and authentication of invite creation and use (CONTINUING: host H-1, H-2, H-4).
   Invites live in memory only and any logged-in id is accepted, so use this on a LAN only.
 - Whether the shipped build's own entry points were ever reachable by players.

@@ -10,7 +10,7 @@ EchoRelay host's `/invites` routes and joins the resulting session in process. N
 | p40 CREATE INVITE CODE & LINK | from the page's own `create_invite` metric (settings + player id): `POST /invites` → code + link |
 | p41 JOIN | joins the invite it just created |
 | p34 types a code + ENTER | from the page's own `join_via_code` / `join` metric (`join_code`): `GET /invites/{code}` → joins its link |
-| p34 resolve fails | a message in the field's title bar (`title_text` of actor `0xad97e58a7b13425f`): `INVALID CODE` (404), `CODE EXPIRED` / `CODE CLOSED` (410), `NO CONNECTION`, `SERVER ERROR` |
+| p34 resolve fails | a message in the field's title bar (`title_text` of actor `0xad97e58a7b13425f`): the host's `reason` first, else the status: `INVALID CODE` (404 / `invalid`), `CODE EXPIRED` / `CODE CLOSED` (410), `ENTER PASSWORD` / `WRONG PASSWORD` (403), `INVITES OFF` (503 `invites_off`), `NO SERVER FREE` (503), `TRY AGAIN LATER` (429), `NO CONNECTION`, `SERVER ERROR` |
 | p34, password invite (403) | title `ENTER PASSWORD`; the next ENTER within 2 min is the password (with or without the code still in front of it): `GET /invites/{code}?password=…`; a wrong one reads `WRONG PASSWORD` and asks again; CANCEL / BACK drops the prompt |
 
 **Join**: at the main menu (NetGame state 3) it stages CR15Game's `-lobbyid` block and runs "Beginning
@@ -18,9 +18,29 @@ multiplayer", the function PLAY runs, so the netgame joins the link instead of m
 the STATUS page (`mnu_master` 51) first and begins a second later, so the player sees the connection. In a
 lobby or match it calls `CR15NetClientLobby::Join`.
 
-**Texts on both platforms:** after a create, p41 shows the code and `EXPIRES: HH:MM UTC`, and p35 shows
-`-lobbyid <link>` (`CCanvasUICS::SetText` on each actor's `canvasui`; the code script's own `UpdateCode` refuses
-outside calls).
+**Texts on both platforms:** after a create, p41 shows the code and `EXPIRES: HH:MM UTC`, and p35 (the INVITE
+LINK card) shows the invite's web link (`CCanvasUICS::SetText` on each actor's `canvasui`; the code script's own
+`UpdateCode` refuses outside calls). See "Invite links" below.
+
+## Invite links
+
+The INVITE LINK card (opened by the home INVITE LINK button, and by the create wizard's share page) shows one line,
+`<link_base>/deeplinks/launch?code=CODE`, where CODE is the invite code. Joining is unchanged: the `-lobbyid`
+boot argument stays the internal join mechanism, and only the text on the card differs.
+
+Which base the card shows, first match wins:
+
+1. `invite_link_base` in the client's config (the same `config.json` that holds `apiservice_host`; PC
+   `_local\config.json`, Quest `/sdcard/readyatdawn/_local/config.json`), for example
+   `"invite_link_base": "http://myhost.lan:777"`. It must start with `http://` or `https://`; anything else is ignored
+   and logged.
+2. The `link_url` the host returns with each invite (the EchoRelay fork builds it from `--link-base`; its default is
+   the host's first LAN address and the services port). Used only when it holds the invite's code; a link for another code is skipped.
+3. `http://HOST[:PORT]` from `apiservice_host`, plus the path.
+
+If none of these gives a usable address (no code, or a link over 127 characters) the card keeps the older text,
+`-lobbyid <id>`; the note under the link ("open the link to see the code, or enter it in JOIN VIA CODE") is written only while the card shows one of our web links, not beside that fallback. Opening the link in a browser on the same network shows the host's page for that invite (live,
+expired or closed); it does not start the game.
 
 **p34 messages and the password prompt:** the p34 error messages run on PC and Quest. A password join works from a PC
 creator to a Quest joiner, but the p34 field holds only 5 characters, so the typed code has to be cleared first;
@@ -29,6 +49,22 @@ making that one flow is open.
 Not yet: no protocol handler or installer; the in-match wizard (`mnu_master_mp_ingame` 8–14) is not mapped: its page
 owners differ from p36–p41, so a create there is not seen. Invites for AI TEAMMATES games used to crash the dedicated
 server; that is fixed on the host side in the EchoRelay fork (it hands team-Any joiners the creator's team).
+
+## Exports for other plugins (Q3 "See this friend", rad-menu's FRIENDS rows)
+
+Resolve with `GetProcAddress` on the loaded rad-links module. Both only queue work (any thread); the join runs on the
+next ticks through the wizard's own `join_link` (main menu: STATUS page, stage `-lobbyid`, begin multiplayer; lobby or
+game: leave / cancel, then `Join`). Return 0 = queued, -1 = bad argument, -2 = rad-links not running.
+
+- `int radlinks_follow(const char *guid, const char *gametype)`: join a session id or invite link by GUID; `gametype`
+  is a name, `0x<16 hex>` (the symbol itself, as the host's `/friends` row gives it), or NULL / "" (-1).
+- `int radlinks_join_code(const char *code)`: a GUID → `radlinks_follow(code, NULL)`; otherwise an invite code,
+  resolved through `GET /invites/{code}` exactly as JOIN VIA CODE.
+
+Log: `follow 8f4e1d2a..(36) (gametype …): queued` / `join code D..(5): queued (resolve, then join)`, then the usual
+`join …` lines (codes, links and session ids are masked in every log line; see Log below).
+The host accepts a raw SessionId as the join target (`GameServerRegistry.GetGameServer` looks up session ids before
+aliases; `source-only`). Built 2026-10-30, no game run yet.
 
 ## Build
 
@@ -48,8 +84,11 @@ Put `rad-links.dll` in the `mods\` folder beside the evrmod `winmm.dll` loader (
 hook sites; or inject it into `echovr.exe` yourself, in which case it hooks the same sites itself and chains onto a
 hook another tool already put there.
 
-- Services: `apiservice_host` in the install's `_local\config.json` (the address the client logs in to).
-- Log: `_local\radlinks.log` beside the exe.
+- Services: `apiservice_host` in the install's `_local\config.json` (the address the client logs in to). Optional
+  `invite_link_base` in the same file sets the base of the INVITE LINK card's link (see "Invite links").
+- Log: `_local\radlinks.log` beside the exe. Invite codes, links and session ids never appear whole (first quarter
+  and length: `D..(5)`, `8f4e1d2a..(36)`; your own code and link as lengths only), and no player id is written, so
+  the log can be shared. The Quest build logs the same way.
 - The EchoRelay host must serve the `/invites` routes (start it with `--invites true`).
 
 ## Quest (`libradlinks.so`)

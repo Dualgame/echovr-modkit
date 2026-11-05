@@ -28,7 +28,9 @@ The studio's 2022-06-16 patch notes say only "Updated the Main Menu."
   invite flow in [create-and-join.md](create-and-join.md). The cards reuse the shipped card canvas; no new art was made.
 
 ## What is open
-- The MY INVITE CODE footer (the shipped footer reads INVITE CODE; it is not wired to a created invite).
+- The MY INVITE CODE footer (the shipped footer reads INVITE CODE; it is not wired to a created invite). Main Menu A
+  (0.2.0) replaces these cards with its own home page, which has a MY INVITE CODE / INVITE LINK row; the two cannot be
+  combined, and Main Menu A is checked in [../status.md](../status.md).
 - Card art for CREATE GAME and JOIN VIA CODE.
 - The cards in other languages (CONTINUING: other languages).
 - Whether these cards ever appeared in a live build.

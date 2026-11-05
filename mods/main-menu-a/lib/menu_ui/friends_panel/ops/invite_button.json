@@ -1,0 +1,4 @@
+[{"op":"design","size":[1650,270],"rt":[782,128]},
+ {"op":"rect","prim":0,"rect":[0,0,1650,270]}, {"op":"rect","prim":1,"rect":[0,0,1650,270]},
+ {"op":"rect","prim":2,"rect":[0,0,1650,270]}, {"op":"rect","prim":3,"rect":[0,0,1650,270]},
+ {"op":"rect","prim":4,"rect":[0,0,1650,270]}, {"op":"text","prim":4,"text":"INVITE FRIENDS"}]

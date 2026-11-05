@@ -40,6 +40,9 @@ build.cmd --no-def   :: skip the .def regeneration (use the committed src\winmm.
 python tools\gen_def.py check build\winmm.dll   :: assert the export table matches the system winmm
 ```
 
+Deploy: the kit's `--hook` resolves the staged DLL slot (`pc.winmm@live`) from `variants.toml`; stage, promote and restore
+go through the variants tool of the kit.
+
 ## Install
 
 1. Copy `build\winmm.dll` next to `echovr.exe` (`<game>\bin\win10\`).
@@ -94,7 +97,7 @@ Target build: **Echo VR Quest `6528386917200980`** (vc 4987566). A loader only: 
   `DT_NEEDED`. Three edits make it work: the spare `.dynamic` slot 34 becomes the NEEDED entry, the name sits in
   the shared cave at `0x2a760f0`, and both string bounds are widened to reach it (`DT_STRSZ`, and the `.dynstr`
   section header's `sh_size`, which bionic's `ElfReader` checks when it reads `DT_NEEDED` from the file). The APK
-  stays non-debuggable and has no `wrap.sh`.
+  stays non-debuggable and has no `wrap.sh`. The `standing` / `debuggable` test recipes use this loader.
 - **What it does.** Its constructor runs after `libr15.so` is relocated and before `libr15.so`'s own constructors.
   It `dlopen`s every `libevrmod_*.so` in its own directory, in `strcmp` order, and logs each result to logcat with
   the tag `evrmod`. The builder installs each `--plugin X.so` as `libevrmod_<stem>.so` (`libradlinks.so` →

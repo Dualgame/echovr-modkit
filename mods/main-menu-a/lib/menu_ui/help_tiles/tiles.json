@@ -1,0 +1,70 @@
+{
+ "early_quit": {
+  "name": "ffa_help_pic_early_quit",
+  "label": "EARLY QUIT",
+  "texture": "ui_mnu_early_quit_info",
+  "uv": [
+   0,
+   0,
+   1,
+   1
+  ],
+  "rect": [
+   0,
+   -28,
+   640,
+   292
+  ]
+ },
+ "season_pass": {
+  "name": "ffa_help_pic_season_pass",
+  "label": "SEASON PASS",
+  "texture": "ui_mnu_season",
+  "uv": [
+   0.0,
+   0.36,
+   0.52,
+   0.815
+  ],
+  "rect": [
+   0,
+   0,
+   640,
+   280
+  ]
+ },
+ "store": {
+  "name": "ffa_help_pic_store",
+  "label": "ECHO VR STORE",
+  "texture": "ui_mnu_news",
+  "uv": [
+   0,
+   0.4,
+   0.62,
+   1.0
+  ],
+  "rect": [
+   0,
+   0,
+   640,
+   280
+  ]
+ },
+ "credits": {
+  "name": "ffa_help_pic_credits",
+  "label": "CREDITS",
+  "texture": "ui_menu_frontend",
+  "uv": [
+   0,
+   0,
+   1,
+   0.7
+  ],
+  "rect": [
+   0,
+   0,
+   640,
+   280
+  ]
+ }
+}

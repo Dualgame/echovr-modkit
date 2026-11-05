@@ -13,6 +13,13 @@ the patched client behaves like a stock one.
 Targets: PC build `6323983201049540` and Quest build `6528386917200980` (version code 4987566). What has been tested,
 on which build: [docs/status.md](../../docs/status.md).
 
+## With rad-menu
+
+The Main Menu A plugin ([mods/rad-menu](../rad-menu/README.md)) uses what this patch restores. With
+`lockout_lock=auto` (its default) PLAY / CREATE GAME / JOIN VIA CODE show a countdown and open the lockout notice while
+the host's lockout is live; a stock client never has a lockout, so nothing is locked there. Its `quit_warning` fills
+the stock warning line on the pause quit confirm in public, non-social lobbies. Neither needs a setting here.
+
 ## What is in this folder
 
 | path | what | used for |

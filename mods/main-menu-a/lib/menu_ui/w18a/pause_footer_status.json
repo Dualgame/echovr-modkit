@@ -1,0 +1,5 @@
+[{"op": "rect", "prim": 1, "rect": [471, 0, 1815, 70]},
+ {"op": "text", "prim": 1, "text": "Online"},
+ {"op": "name", "prim": 1, "name": "text"},
+ {"op": "clone", "prim": 0, "names": ["highlight"]},
+ {"op": "tint", "prim": 2, "rgba": [0.0, 0.0, 0.0, 0.0]}]

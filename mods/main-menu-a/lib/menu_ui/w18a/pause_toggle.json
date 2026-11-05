@@ -1,0 +1,7 @@
+[{"op": "design", "size": [640, 210], "rt": [512, 168]},
+ {"op": "rect", "prim": 0, "rect": [0, 0, 640, 210]},
+ {"op": "rect", "prim": 1, "rect": [0, 0, 640, 210]}, {"op": "tint", "prim": 1, "rgba": [0.271, 0.353, 0.435, 1.0]},
+ {"op": "rect", "prim": 2, "rect": [0, 0, 640, 210]},
+ {"op": "rect", "prim": 3, "rect": [0, 0, 640, 210]},
+ {"op": "rect", "prim": 4, "rect": [250, 6, 390, 146]},
+ {"op": "rect", "prim": 5, "rect": [0, 144, 640, 208]}, {"op": "textstyle", "prim": 5, "size": 50}]

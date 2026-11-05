@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Builds build/libradlinks.so (aarch64, Android API 29+) for the Echo VR Quest app.
-# NDK r26d: NDK=~/toolchains/android-ndk-r26d by default.
+# NDK r26d: NDK=~/toolchains/android-ndk-r26d by default. OUT=<path> writes the library elsewhere (default
+# build/libradlinks.so).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NDK="${NDK:-$HOME/toolchains/android-ndk-r26d}"
 BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 CC="$BIN/aarch64-linux-android29-clang"
-mkdir -p "$HERE/build"
-OUT="$HERE/build/libradlinks.so"
+OUT="${OUT:-$HERE/build/libradlinks.so}"
+mkdir -p "$(dirname "$OUT")"
 set -x
 "$CC" -shared -fPIC -O2 -std=c11 -Wall -Wextra -Werror \
     -fvisibility=hidden -Wl,--no-undefined -Wl,-z,relro -Wl,-z,now -Wl,--build-id=sha1 -Wl,-soname,libradlinks.so \

@@ -1,0 +1,7 @@
+[{"op":"design","size":[1067,118],"rt":[782,86]},
+ {"op":"rect","prim":0,"rect":[0,0,1067,118]},
+ {"op":"rect","prim":1,"rect":[0,0,1067,118]},   {"op":"text","prim":1,"text":"FRIENDS"},
+ {"op":"textstyle","prim":1,"align":[0.5,0.5],"size":64},
+ {"op":"tint","prim":3,"rgba":[0.26,0.27,0.29,0.0]}, {"op":"tint","prim":4,"rgba":[0.41,0.45,0.49,0.0]},
+ {"op":"tint","prim":5,"rgba":[1.0,1.0,1.0,0.0]}, {"op":"text","prim":5,"text":""},
+ {"op":"tint","prim":7,"rgba":[1.0,1.0,1.0,0.0]}]

@@ -1,0 +1,35 @@
+; rad-menu options. Copy to:
+;   PC:    <game>\bin\win10\_local\radmenu.ini   (beside echovr.exe)
+;   Quest: /sdcard/Android/data/com.readyatdawn.r15/files/radmenu.ini
+; Every line is optional; the values below are the defaults. See README.md for the full table.
+[radmenu]
+enabled=1
+; news carousel
+carousel=1
+period_ms=5000
+; FRIENDS rows (needs the fork's --friends true)
+friends=1
+friends_period_ms=5000
+; first-time-user lock: off | auto | force
+ftue=auto
+; early-quit lockout lock: off | auto | force
+lockout_lock=auto
+; warning on the pause quit confirm (public, non-social lobbies only)
+quit_warning=1
+; combat card lock: off | purchase | hardware
+combat_lock=off
+; Report Player (needs the fork's --reports true): auto | on | off
+report=auto
+; the social card's REPORT on the tablet: ac (the REPORT PLAYER panel on the tablet) | popup (pause reasons page) | field
+report_tablet_reasons=ac
+; the tablet REPORT PLAYER panel's CANCEL: card (back to the player's card, as "<") | list (the LOBBY list, card closed)
+report_tablet_cancel=card
+; pause report list scroll: auto | stick | hover | off
+report_list_scroll=auto
+; leave AI bots out of the report list
+report_hide_bots=1
+; Mute & Ghost box on the reason page: 0 = hidden (default), 1 = shown (recorded in the report only)
+report_mute_ghost=0
+; PC: enable the ADD FRIEND tile of the five-tile social card (the press goes to the platform, not your host).
+; Off by default: the game's card scripts switch the tile off again, so on PC it flickers and is mostly not drawn.
+card_add_friend=0

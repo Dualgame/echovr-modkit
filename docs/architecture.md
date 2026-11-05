@@ -116,3 +116,31 @@ The dedicated server is the stock executable with the fork's patch DLL (`EchoRel
 game option. The plugin also relays the lobby-settings message the game server would otherwise drop (details in the
 fork's `docs/protocol/lobby-settings.md`). See [server.md](server.md), and for load per host the fork's `CONTINUING.md` ("Servers per host" and the
 server-density item).
+
+## 5. The menu update (0.2.0): menus, reports and invite links
+
+**Main Menu A is data; rad-menu is code.** The redesigned menu levels, canvases and scripts are built from your own
+install by `mods/main-menu-a` and delivered as rows appended to a copy of the language package, which the game reads
+after the base package at start-up (a later row wins, and new ids are added). On PC the copy is applied into the
+install and put back by `pc-revert`; on Quest it is the pair you push. No executable changes for this part. The
+`rad-menu` plugin (PC DLL through the broker, Quest library through the loader) then writes into the live pages: the
+carousel and tab state, the FRIENDS rows, the lockout and first-time-user locks, the quit warning line and the Report
+Player pages. It does nothing unless the build's marker actor is in the menu, so on a stock menu it only tracks pages.
+
+**Reports.** The Report Player flow reads the lobby's players inside the game process (AI bots are filtered out), and a
+SUBMIT sends one `POST /reports` to the services host with the target's id and name, the reason, the Mute & Ghost box,
+the lobby and match type, the entry point (`card`, `pause`, `tablet`) and the platform. The host stores it; `/admin`
+(control port, or services port with `--admin-token`) lists it and filters by player id and reason.
+
+**Invite links.** The host builds `<link_base>/deeplinks/launch?code=CODE` (`--link-base`, default the host's LAN IPv4: the first
+private-range address on a real adapter, logged at start-up) and returns it as `link_url`, next to the `link` join id that rad-links still joins with. rad-links writes the
+text on the INVITE LINK page: the client's `invite_link_base` wins, then the host's `link_url`, then a link built from
+`apiservice_host`. The landing page the link points to is read-only: live, expired or closed.
+
+**ADD FRIEND.** The five-tile social card's ADD FRIEND tile goes to the platform's friends service on both platforms,
+never to the host. On PC rad-menu can enable the tile (opt-in, `card_add_friend=1`, off by default, because the game's card scripts switch it off again); on a re-signed Quest APK there is no Oculus social
+service to answer it.
+
+**Combat card unlock.** The CREATE GAME page script has one instruction that keeps the ECHO COMBAT card locked on Quest;
+the APK builder's step 10 changes it (checked against the stock library hash, both before and after). A combat match
+still has no level to load.

@@ -1,0 +1,8 @@
+[{"op": "text", "prim": 6, "text": "MY INVITE CODE:"},
+ {"op": "tint", "prim": 6, "rgba": [0.0, 0.0, 0.0, 1.0]},
+ {"op": "text", "prim": 3, "text": "*****"},
+ {"op": "design", "size": [2900, 270], "rt": [1488, 128]},
+ {"op": "rect", "prim": 0, "rect": [1800, 0, 2900, 271]},
+ {"op": "rect", "prim": 4, "rect": [2652, 20, 2882, 250]},
+ {"op": "rect", "prim": 6, "rect": [0, 0, 1800, 271]},
+ {"op": "textstyle", "prim": 6, "size": 192}]

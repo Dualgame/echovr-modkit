@@ -3,4 +3,5 @@ capstone>=5.0        # Quest builder: disassembly checks of the patch sites
 numpy>=1.26          # Quest builder: server-config patch site search
 cryptography>=41.0   # Quest builder: APK v1 signing
 pefile>=2023.2.7     # PC proxy: export-table generation and check (sdk/pc/tools/gen_def.py)
-zstandard>=0.22      # menu cards: language-package frames
+zstandard>=0.22      # menu cards, Main Menu A: language-package frames
+pillow>=10.0       # Main Menu A: the help-tile images

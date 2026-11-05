@@ -49,6 +49,7 @@ client shows its fixed "SERVER IS LOCKED" text for a refused request, not the ho
 ## What is open
 - Post-match timing and enforce mode (the fork's CONTINUING), plus the remaining tests on the device.
 - Ribbons and titles (never seen on a device), and the progress meter's canvas (CONTINUING: ribbons and titles).
-- The quit-confirmation popup, which never shipped.
+- The quit warning is built (rad-menu fills the line on the pause quit confirm, public non-social lobbies); it has not
+  been checked in this release and cannot be seen in Quest combat (no combat level).
 - Tier labels per index, and where the lockout timer sits in game.
 See [../../CONTINUING.md](../../CONTINUING.md).

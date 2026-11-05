@@ -1,0 +1,13 @@
+[
+ {"op": "design", "size": [1440, 70], "rt": [1440, 70]},
+ {"op": "rect", "prim": 0, "rect": [0, 5, 480, 65]},
+ {"op": "text", "prim": 0, "text": "PUBLISHER LOCK"},
+ {"op": "rect", "prim": 1, "rect": [520, 5, 980, 65]},
+ {"op": "text", "prim": 1, "text": "LOBBY VERSION"},
+ {"op": "rect", "prim": 2, "rect": [1040, 5, 1440, 65]},
+ {"op": "text", "prim": 2, "text": "RAD VERSION"},
+ {"op": "name", "prim": 2, "name": "text"},
+ {"op": "clone", "prim": 0, "names": ["highlight"]},
+ {"op": "tint", "prim": 3, "rgba": [0.0, 0.0, 0.0, 0.0]},
+ {"op": "text", "prim": 3, "text": " "},
+ {"op": "rect", "prim": 3, "rect": [0, 5, 1, 6]}]

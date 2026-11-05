@@ -1,0 +1,4 @@
+[{"op": "text", "prim": 6, "text": "MY INVITE CODE:"},
+ {"op": "textstyle", "prim": 6, "size": 96},
+ {"op": "tint", "prim": 6, "rgba": [0.0, 0.0, 0.0, 1.0]},
+ {"op": "text", "prim": 3, "text": "*****"}]
